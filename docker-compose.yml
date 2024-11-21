@@ -1,0 +1,56 @@
+services:
+  monitor:
+    build:
+      context: .
+      dockerfile: ${DOCKERFILE:-Dockerfile}  # Default to GPU version
+    ports:
+      - "8000:8000"
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    volumes:
+      - ${DEV_MOUNT:-.}/app:/app  # Only mount in dev mode
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /usr/bin/nvidia-smi:/usr/bin/nvidia-smi
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    platform: linux/amd64
+    profiles:
+      - gpu
+    depends_on:
+      - redis
+
+  monitor-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.macos
+    ports:
+      - "8000:8000"
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    volumes:
+      - .:/app
+      - ~/.ssh/github:/root/.ssh/github:ro
+    platform: linux/arm64
+    profiles:
+      - dev
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    platform: linux/arm64
+    command: redis-server --appendonly yes
+
+volumes:
+  redis_data:

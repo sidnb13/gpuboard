@@ -1,0 +1,37 @@
+FROM python:3.11-slim
+
+# Set working directory
+WORKDIR /app
+
+# Install system dependencies and utilities
+RUN apt-get update && apt-get install -y \
+    gcc \
+    git \
+    wget \
+    screen \
+    && sh -c "$(wget -O- https://github.com/deluan/zsh-in-docker/releases/download/v1.1.5/zsh-in-docker.sh)" -- \
+    -t robbyrussell \
+    -p git \
+    -p https://github.com/zsh-users/zsh-history-substring-search \
+    -p https://github.com/zsh-users/zsh-syntax-highlighting \
+    -p https://github.com/zsh-users/zsh-autosuggestions \
+    -p https://github.com/zsh-users/zsh-completions \
+    && rm -rf /var/lib/apt/lists/* \
+    && chsh -s $(which zsh)
+
+SHELL ["/bin/zsh", "-c"]
+
+# Setup SSH
+RUN git config --global url."git@github.com:".insteadOf "https://github.com/"
+
+# Copy requirements first for better caching
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY . .
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1
+
+CMD ["tail", "-f", "/dev/null"]
