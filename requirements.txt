@@ -14,9 +14,12 @@ fastapi
 uvicorn
 pydantic
 websockets
+openapi-client
+aiohttp
 
 # Utils
 python-dotenv
 ruff
 ipykernel
 jupyter
+slack-sdk

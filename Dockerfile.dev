@@ -9,6 +9,8 @@ RUN apt-get update && apt-get install -y \
     git \
     wget \
     screen \
+    && curl -fsSL https://deb.nodesource.com/setup_18.x | bash - \
+    && apt-get install -y nodejs \
     && sh -c "$(wget -O- https://github.com/deluan/zsh-in-docker/releases/download/v1.1.5/zsh-in-docker.sh)" -- \
     -t robbyrussell \
     -p git \
@@ -24,9 +26,13 @@ SHELL ["/bin/zsh", "-c"]
 # Setup SSH
 RUN git config --global url."git@github.com:".insteadOf "https://github.com/"
 
+# Install npm dependencies (add before the Python requirements)
+COPY dashboard/package*.json ./
+RUN npm install
+
 # Copy requirements first for better caching
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt && pip install -e lambda_client
 
 # Copy application code
 COPY . .
