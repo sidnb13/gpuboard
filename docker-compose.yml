@@ -2,7 +2,7 @@ services:
   monitor:
     build:
       context: .
-      dockerfile: ${DOCKERFILE:-Dockerfile.monitor}
+      dockerfile: Dockerfile.monitor
     ports:
       - "8001:8001"
     environment:
@@ -11,7 +11,6 @@ services:
       - MONITOR_HOST=0.0.0.0
       - MONITOR_PORT=8001
     volumes:
-      - ${DEV_MOUNT:-.}/app:/app
       - /var/run/docker.sock:/var/run/docker.sock
     platform: linux/amd64
     depends_on:

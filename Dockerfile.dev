@@ -22,10 +22,6 @@ SHELL ["/bin/zsh", "-c"]
 # Setup SSH
 RUN git config --global url."git@github.com:".insteadOf "https://github.com/"
 
-# Copy and install Python requirements first
-COPY requirements-dev.txt .
-RUN pip install --no-cache-dir -r requirements-dev.txt && pip install -e lambda_client
-
 # Copy and install frontend dependencies
 COPY dashboard/package*.json ./dashboard/
 WORKDIR /app/dashboard
@@ -34,6 +30,8 @@ WORKDIR /app
 
 # Copy application code
 COPY . .
+
+RUN pip3 install --no-cache-dir -e .[agent,monitor] && pip3 install --no-cache-dir -e lambda_client
 
 ENV PYTHONUNBUFFERED=1
 
