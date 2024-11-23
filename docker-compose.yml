@@ -48,7 +48,6 @@ services:
               count: all
               capabilities: [gpu]
     depends_on:
-      - monitor
       - redis
     env_file:
       - .env.agent
