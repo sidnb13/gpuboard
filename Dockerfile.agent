@@ -2,10 +2,17 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements-agent.txt .
 RUN pip3 install --no-cache-dir -r requirements-agent.txt
 
-COPY . .
-ENV PYTHONUNBUFFERED=1
+COPY agent ./agent
 
-CMD ["python3", "agent/main.py"]
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app
+
+CMD ["python3", "-m", "agent.main"]
