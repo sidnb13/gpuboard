@@ -2,8 +2,8 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-COPY requirements.server.txt requirements.txt
-RUN pip3 install --no-cache-dir -r requirements.txt
+COPY requirements-monitor.txt .
+RUN pip3 install --no-cache-dir -r requirements-monitor.txt
 
 COPY . .
 ENV PYTHONUNBUFFERED=1

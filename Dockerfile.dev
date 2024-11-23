@@ -23,8 +23,8 @@ SHELL ["/bin/zsh", "-c"]
 RUN git config --global url."git@github.com:".insteadOf "https://github.com/"
 
 # Copy and install Python requirements first
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt && pip install -e lambda_client
+COPY requirements-dev.txt .
+RUN pip install --no-cache-dir -r requirements-dev.txt && pip install -e lambda_client
 
 # Copy and install frontend dependencies
 COPY dashboard/package*.json ./dashboard/
