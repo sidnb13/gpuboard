@@ -2,18 +2,17 @@ services:
   monitor:
     build:
       context: .
-      dockerfile: ${DOCKERFILE:-Dockerfile} # Default to GPU version
+      dockerfile: ${DOCKERFILE:-Dockerfile.server}
     ports:
-      - "8001:8001" # Changed to match MONITOR_PORT
+      - "8001:8001"
     environment:
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
       - MONITOR_HOST=0.0.0.0
       - MONITOR_PORT=8001
     volumes:
-      - ${DEV_MOUNT:-.}/app:/app # Only mount in dev mode
+      - ${DEV_MOUNT:-.}/app:/app
       - /var/run/docker.sock:/var/run/docker.sock
-      - /usr/bin/nvidia-smi:/usr/bin/nvidia-smi
     deploy:
       resources:
         reservations:
@@ -22,8 +21,6 @@ services:
               count: all
               capabilities: [gpu]
     platform: linux/amd64
-    profiles:
-      - gpu
     depends_on:
       - redis
     env_file:
@@ -34,50 +31,43 @@ services:
       context: .
       dockerfile: Dockerfile.agent
     ports:
-      - "8000:8000" # Matches AGENT_PORT
+      - "8000:8000"
     environment:
       - AGENT_HOST=0.0.0.0
       - AGENT_PORT=8000
-      - MONITOR_URL=http://monitor:8001 # Points to monitor service
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
+      - MONITOR_URL=${MONITOR_URL:-http://monitor:8001}
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+    volumes:
+      - /usr/bin/nvidia-smi:/usr/bin/nvidia-smi
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     depends_on:
       - monitor
       - redis
     env_file:
       - .env.agent
-
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile.frontend
-    ports:
-      - "3000:3000"
-    environment:
-      - VITE_API_URL=${VITE_API_URL:-http://localhost:8001}
-    depends_on:
-      - monitor
 
   dev:
     build:
       context: .
       dockerfile: Dockerfile.dev
     ports:
-      - "8000:8000"
+      - "8002:8000" # Changed to avoid any potential conflicts
     environment:
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
     volumes:
       - .:/app
       - ~/.ssh/github:/root/.ssh/github:ro
     platform: linux/arm64
-    profiles:
-      - dev
     depends_on:
       - redis
-    env_file:
-      - .env.monitor
-      - .env.agent
 
   redis:
     image: redis:7-alpine
@@ -85,7 +75,6 @@ services:
       - "${REDIS_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
-    platform: linux/arm64
     command: redis-server --appendonly yes
 
 volumes:
