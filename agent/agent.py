@@ -60,6 +60,11 @@ class Agent:
                     if response.status != 200:
                         logger.error(f"Registration failed: {await response.text()}")
                         return False
+
+                    response_data = await response.json()
+                    self.monitor_api_key = response_data[
+                        "api_key"
+                    ]  # Store the received key
                     self.is_registered = True
                     logger.info(f"Successfully registered instance {self.instance_id}")
                     return True
@@ -71,7 +76,7 @@ class Agent:
         """Deregister from the monitor service."""
         try:
             async with aiohttp.ClientSession() as session:
-                headers = {"X-API-Key": self.backend_api_key}
+                headers = {"X-API-Key": self.monitor_api_key}
                 async with session.delete(
                     f"{self.monitor_url}/instances/{self.instance_id}", headers=headers
                 ) as response:
