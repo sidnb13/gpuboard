@@ -69,7 +69,7 @@ services:
       context: .
       dockerfile: Dockerfile.dev
     ports:
-      - "8002:8000" # Changed to avoid any potential conflicts
+      - "8002:8000"
     environment:
       - REDIS_HOST=${REDIS_HOST:-redis}
       - REDIS_PORT=${REDIS_PORT:-6379}

@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y \
     wget \
     screen \
     curl \
+    openssh-server \
     && curl -fsSL https://deb.nodesource.com/setup_18.x | bash - \
     && apt-get install -y nodejs \
     && npm install -g npm@latest \
@@ -17,6 +18,11 @@ RUN apt-get update && apt-get install -y \
     -p git \
     && rm -rf /var/lib/apt/lists/* \
     && chsh -s $(which zsh)
+
+# Configure SSH
+RUN mkdir /var/run/sshd && \
+    echo 'PermitRootLogin yes' >> /etc/ssh/sshd_config && \
+    echo 'PasswordAuthentication no' >> /etc/ssh/sshd_config
 
 SHELL ["/bin/zsh", "-c"]
 
@@ -45,4 +51,15 @@ RUN pip3 install --no-cache-dir -e '.[agent,monitor]' && pip3 install --no-cache
 
 ENV PYTHONUNBUFFERED=1
 
-CMD ["tail", "-f", "/dev/null"]
+COPY <<EOF /start.sh
+#!/bin/zsh
+# Start ssh-agent and add GitHub key
+eval \$(ssh-agent -s)
+ssh-add /root/.ssh/github
+# Keep container running
+tail -f /dev/null
+EOF
+
+RUN chmod +x /start.sh
+
+CMD ["/start.sh"]
