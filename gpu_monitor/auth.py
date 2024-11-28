@@ -1,36 +1,53 @@
 import secrets
-from datetime import UTC, datetime
+import string
 from typing import Optional
 
-from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
+from logger import get_logger
 
-class AgentKey(BaseModel):
-    key: str
-    instance_id: str
-    created_at: datetime
-    is_active: bool = True
+from .models import ApiKey
+
+logger = get_logger(__name__)
 
 
 class AuthManager:
-    def __init__(self, secret_key: str):
-        self.secret_key = secret_key
-        self.agent_keys: dict[str, AgentKey] = {}
+    def __init__(self, db_session: Session):
+        self.db = db_session
 
-    def generate_agent_key(self, instance_id: str) -> str:
-        """Generate an API key for an agent"""
-        key = secrets.token_urlsafe(32)
+    def create_api_key(self, instance_id: Optional[str] = None):
+        """Create a new API key for an instance and store it in the database."""
 
-        self.agent_keys[key] = AgentKey(
-            key=key,
-            instance_id=instance_id,
-            created_at=datetime.now(UTC),
+        # Generate a random API key
+        alphabet = string.ascii_letters + string.digits
+        api_key = "".join(secrets.choice(alphabet) for _ in range(32))
+
+        # Create new API key record
+        new_key = ApiKey(
+            key=api_key,
+            instance_id=instance_id
+            or "default",  # Use "default" if no instance_id provided
+            is_active=True,
         )
-        return key
+
+        # Add and commit to database
+        self.db.add(new_key)
+        self.db.commit()
+
+        return api_key
 
     def verify_agent_key(self, key: str) -> Optional[str]:
         """Verify an agent's API key, returns instance_id if valid"""
-        agent_key = self.agent_keys.get(key)
-        if not agent_key or not agent_key.is_active:
+        try:
+            api_key = (
+                self.db.query(ApiKey)
+                .filter(ApiKey.key == str(key), ApiKey.is_active == True)
+                .first()
+            )
+
+            if not api_key:
+                return None
+            return api_key.instance_id
+        except Exception as e:
+            logger.error(f"Error verifying API key: {e}")
             return None
-        return agent_key.instance_id

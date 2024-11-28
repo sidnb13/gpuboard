@@ -10,18 +10,81 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
 from slack_sdk.web.async_client import AsyncWebClient
+from sqlalchemy import create_engine
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import sessionmaker
 
 from logger import get_logger
 
 from .auth import AuthManager
+from .models import ApiKey, Base
 from .monitor import ClusterMonitor
 
 logger = get_logger(__name__)
 load_dotenv(".env.monitor")
 
+
+# Database setup
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:pass@localhost/gpumonitor")
+try:
+    engine = create_engine(DATABASE_URL)
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+    # Test the connection and create tables
+    with engine.begin() as conn:
+        Base.metadata.create_all(bind=engine)
+        logger.info("Successfully connected to database and created tables")
+except OperationalError as e:
+    logger.error(f"Failed to connect to database: {e}")
+    logger.error("Please ensure PostgreSQL is running and the DATABASE_URL is correct")
+    raise
+
+
+def initialize_db():
+    """Initialize database with default API key if empty."""
+    db = SessionLocal()
+    try:
+        # Check if any API keys exist
+        existing_keys = db.query(ApiKey).count()
+        if existing_keys == 0:
+            # Create auth manager and generate new key
+            auth_manager = AuthManager(db)
+            api_key = auth_manager.create_api_key()
+
+            logger.info("=" * 60)
+            logger.info("Initialized database with default API key")
+            logger.info(f"API Key: {api_key}")
+            logger.info(
+                "Please use this key in your agent's MONITOR_API_KEY environment variable"
+            )
+            logger.info("=" * 60)
+        return True
+    except Exception as e:
+        logger.error(f"Failed to initialize database: {e}")
+        raise
+    finally:
+        db.close()
+
+
+try:
+    initialize_db()
+except Exception as e:
+    logger.error(f"Database initialization failed: {e}")
+    raise
+
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
 @asynccontextmanager
 async def start_monitor(app: FastAPI):
     global monitor
+
     monitor = ClusterMonitor(
         idle_shutdown_minutes=float(os.getenv("IDLE_SHUTDOWN_MINUTES", 30)),
         warning_minutes=float(os.getenv("WARNING_MINUTES", 5)),
@@ -35,7 +98,6 @@ async def start_monitor(app: FastAPI):
 
     yield
 
-    # Cancel any remaining tasks
     for task in asyncio.all_tasks():
         if task is not asyncio.current_task():
             task.cancel()
@@ -46,7 +108,7 @@ async def start_monitor(app: FastAPI):
 
 
 app = FastAPI(title="GPU Monitor", lifespan=start_monitor)
-auth_manager = AuthManager(secret_key=os.getenv("SECRET_KEY"))
+auth_manager = AuthManager(db_session=next(get_db()))
 
 # Security
 API_KEY_HEADER = APIKeyHeader(name="X-API-Key")
@@ -262,7 +324,7 @@ async def unregister_instance(
     instance_id: str, api_key: str = Security(API_KEY_HEADER)
 ):
     """Unregister an instance from monitoring."""
-    if api_key not in VALID_API_KEYS:
+    if not auth_manager.verify_agent_key(api_key):
         raise HTTPException(status_code=403, detail="Invalid API key")
 
     if instance_id not in monitor.instances:
@@ -276,46 +338,36 @@ async def unregister_instance(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/admin/registration-token")
-async def create_registration_token(
+@app.post("/admin/api-key")
+async def create_api_key(
     instance_id: str, admin_key: str = Header(..., alias="X-Admin-Key")
 ):
-    """Generate a registration token for a new instance"""
+    """Generate a backend API key for a new instance"""
     if admin_key != ADMIN_API_KEY:  # Load from config
         raise HTTPException(status_code=403, detail="Invalid admin key")
 
-    token = auth_manager.generate_registration_token(instance_id)
-    return {"token": token}
+    api_key = auth_manager.create_api_key(instance_id)
+    return {"api_key": api_key}
 
 
 @app.post("/register/{instance_id}")
 async def register_agent(
-    instance_id: str,
-    agent_info: dict,
-    admin_key: str = Header(..., alias="X-Admin-Key"),
+    instance_id: str, agent_info: dict, api_key: str = Security(API_KEY_HEADER)
 ):
     """Register a new agent instance"""
-    
-    
-    print("ADMIN KEY:", ADMIN_API_KEY)
-    print("AGENT KEY:", admin_key)
-    
-    if admin_key != ADMIN_API_KEY:
-        raise HTTPException(status_code=403, detail="Invalid admin key")
-
-    api_key = auth_manager.generate_agent_key(instance_id)
+    if not auth_manager.verify_agent_key(api_key):
+        raise HTTPException(status_code=403, detail="Invalid API key")
 
     try:
         await monitor.register_agent(
             instance_id=instance_id,
             backend_type=agent_info["backend_type"],
-            backend_api_key=agent_info["api_key"],
+            backend_api_key=agent_info["backend_api_key"],
             name=agent_info.get("name"),
         )
         return {
             "status": "registered",
             "instance_id": instance_id,
-            "api_key": api_key,
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

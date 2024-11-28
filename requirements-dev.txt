@@ -17,6 +17,10 @@ websockets
 openapi-client
 aiohttp
 
+# Database
+SQLAlchemy
+psycopg2-binary
+
 # Utils
 python-dotenv
 ruff

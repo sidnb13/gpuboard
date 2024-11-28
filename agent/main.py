@@ -40,7 +40,6 @@ async def lifespan(app: FastAPI):
 
     try:
         redis_client = redis.Redis(**redis_params)
-        # Test the connection
         await redis_client.ping()
         logger.info("Successfully connected to Redis")
     except Exception as e:
@@ -50,29 +49,26 @@ async def lifespan(app: FastAPI):
         logger.error(f"Port: {redis_params['port']}")
         raise
 
-    # Initialize agent
     agent = Agent(
         monitor_url=os.getenv("MONITOR_URL"),
         instance_id=os.getenv("INSTANCE_ID"),
         backend_type=os.getenv("BACKEND_TYPE"),
         backend_api_key=os.getenv("BACKEND_API_KEY"),
+        monitor_api_key=os.getenv("MONITOR_API_KEY"),
         name=os.getenv("INSTANCE_NAME"),
         redis_client=redis_client,
     )
 
-    # Start all background tasks
     asyncio.create_task(agent.start())
 
     yield
 
-    # Deregister agent before shutdown
     try:
         await agent.deregister()
         logger.info("Successfully deregistered agent")
     except Exception as e:
         logger.error(f"Failed to deregister agent: {e}")
 
-    # Cancel the monitor task
     for task in asyncio.all_tasks():
         if task is not asyncio.current_task():
             task.cancel()
@@ -86,7 +82,6 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Instance Monitor API", lifespan=lifespan)
 
-# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

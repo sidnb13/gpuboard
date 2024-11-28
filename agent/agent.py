@@ -20,6 +20,7 @@ class Agent:
         instance_id: str,
         backend_type: str,
         backend_api_key: str,
+        monitor_api_key: str,
         name: Optional[str] = None,
         redis_client: redis.Redis = None,
         stream_interval: int = 10,
@@ -29,6 +30,7 @@ class Agent:
         self.instance_id = instance_id
         self.backend_type = backend_type
         self.backend_api_key = backend_api_key
+        self.monitor_api_key = monitor_api_key
         self.name = name or instance_id
         self.redis = redis_client
         self.stats_monitor = InstanceMonitor(
@@ -45,10 +47,10 @@ class Agent:
         """Register with the monitor service."""
         try:
             async with aiohttp.ClientSession() as session:
-                headers = {"X-Admin-Key": self.backend_api_key}
+                headers = {"X-API-Key": self.monitor_api_key}
                 data = {
                     "backend_type": self.backend_type,
-                    "api_key": self.backend_api_key,
+                    "backend_api_key": self.backend_api_key,
                     "name": self.name,
                 }
 
@@ -61,10 +63,6 @@ class Agent:
                         logger.error(f"Registration failed: {await response.text()}")
                         return False
 
-                    response_data = await response.json()
-                    self.monitor_api_key = response_data[
-                        "api_key"
-                    ]  # Store the received key
                     self.is_registered = True
                     logger.info(f"Successfully registered instance {self.instance_id}")
                     return True

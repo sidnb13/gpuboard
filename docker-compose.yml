@@ -14,9 +14,28 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     platform: linux/amd64
     depends_on:
-      - redis
+      - redis:
+          condition: service_started
+      - db:
+          condition: service_healthy
     env_file:
       - .env.monitor
+
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: pass
+      POSTGRES_DB: gpumonitor
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d gpumonitor"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   agent:
     build:
@@ -40,7 +59,8 @@ services:
               count: all
               capabilities: [gpu]
     depends_on:
-      - redis
+      - redis:
+          condition: service_healthy
     env_file:
       - .env.agent
 
@@ -58,7 +78,10 @@ services:
       - ~/.ssh/github:/root/.ssh/github:ro
     platform: linux/arm64
     depends_on:
-      - redis
+      - redis:
+          condition: service_started
+      - db:
+          condition: service_healthy
 
   redis:
     image: redis:7-alpine
@@ -70,3 +93,4 @@ services:
 
 volumes:
   redis_data:
+  postgres_data:

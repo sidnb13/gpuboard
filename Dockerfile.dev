@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y \
     git \
     wget \
     screen \
+    curl \
     && curl -fsSL https://deb.nodesource.com/setup_18.x | bash - \
     && apt-get install -y nodejs \
     && npm install -g npm@latest \
@@ -31,7 +32,7 @@ WORKDIR /app
 # Copy application code
 COPY . .
 
-RUN pip3 install --no-cache-dir -e .[agent,monitor] && pip3 install --no-cache-dir -e lambda_client
+RUN pip3 install --no-cache-dir -e '.[agent,monitor]' && pip3 install --no-cache-dir -e lambda_client
 
 ENV PYTHONUNBUFFERED=1
 
