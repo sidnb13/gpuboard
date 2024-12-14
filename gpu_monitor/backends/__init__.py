@@ -1,5 +1,6 @@
 from .base import Backend, BackendType
 from .lambda_labs import LambdaBackend
+from .dryrun import DryRunBackend
 
 
 class BackendFactory:
@@ -12,7 +13,7 @@ class BackendFactory:
             BackendType.LAMBDA_LABS: lambda: LambdaBackend(
                 api_key=kwargs.get("api_key")
             ),
-            # Add other backends here as they're implemented
+            BackendType.DRY_RUN: lambda: DryRunBackend(),
         }
 
         if backend_type not in backends:
@@ -21,4 +22,4 @@ class BackendFactory:
         return backends[backend_type]()
 
 
-__all__ = ["Backend", "LambdaBackend", "BackendFactory"]
+__all__ = ["Backend", "LambdaBackend", "DryRunBackend", "BackendType", "BackendFactory"]

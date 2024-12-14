@@ -27,3 +27,5 @@ ruff
 ipykernel
 jupyter
 slack-sdk
+discord.py
+slack_bolt

@@ -9,7 +9,6 @@ from fastapi import FastAPI, Header, HTTPException, Security, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
-from slack_sdk.web.async_client import AsyncWebClient
 from sqlalchemy import create_engine
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
@@ -58,6 +57,14 @@ def initialize_db():
                 "Please use this key in your agent's MONITOR_API_KEY environment variable"
             )
             logger.info("=" * 60)
+        # Print out all API keys in database
+        api_keys = db.query(ApiKey).all()
+        if api_keys:
+            logger.info("Current API keys in database:")
+            for key in api_keys:
+                logger.info(f"Key: {key.key}, Created: {key.created_at}")
+        else:
+            logger.info("No API keys found in database")
         return True
     except Exception as e:
         logger.error(f"Failed to initialize database: {e}")
@@ -92,7 +99,11 @@ async def start_monitor(app: FastAPI):
         dry_run=os.getenv("DRY_RUN", "true").lower() == "true",
         agent_url=os.getenv("AGENT_URL", "http://localhost:8000"),
         slack_token=os.getenv("SLACK_BOT_TOKEN"),
+        slack_app_token=os.getenv("SLACK_APP_TOKEN"),
         slack_channel=os.getenv("SLACK_CHANNEL"),
+        discord_token=os.getenv("DISCORD_BOT_TOKEN"),
+        discord_channel_id=int(os.getenv("DISCORD_CHANNEL_ID")),
+        notifier_type=os.getenv("NOTIFIER_TYPE", "discord").lower(),
     )
     asyncio.create_task(monitor.monitor_loop())
 
@@ -186,52 +197,6 @@ async def update_settings(
         monitor.dry_run = settings.dry_run
 
     return await get_settings(api_key)
-
-
-@app.get("/slack")
-async def get_slack_settings(api_key: str = Security(API_KEY_HEADER)):
-    """Get current Slack integration settings."""
-    if api_key not in VALID_API_KEYS:
-        raise HTTPException(status_code=403, detail="Invalid API key")
-
-    return {
-        "enabled": monitor.slack is not None,
-        "channel": monitor.slack_channel if monitor.slack else None,
-    }
-
-
-@app.put("/slack")
-async def update_slack_settings(
-    settings: SlackSettings, api_key: str = Security(API_KEY_HEADER)
-):
-    """Update Slack integration settings."""
-    if api_key not in VALID_API_KEYS:
-        raise HTTPException(status_code=403, detail="Invalid API key")
-
-    try:
-        # Test the Slack token before saving
-        test_client = AsyncWebClient(token=settings.slack_token)
-        await test_client.auth_test()
-
-        monitor.slack = test_client
-        monitor.slack_channel = settings.slack_channel
-
-        return {"status": "updated", "enabled": True}
-    except Exception as e:
-        raise HTTPException(
-            status_code=400, detail=f"Failed to configure Slack: {str(e)}"
-        )
-
-
-@app.delete("/slack")
-async def disable_slack(api_key: str = Security(API_KEY_HEADER)):
-    """Disable Slack integration."""
-    if api_key not in VALID_API_KEYS:
-        raise HTTPException(status_code=403, detail="Invalid API key")
-
-    monitor.slack = None
-    monitor.slack_channel = None
-    return {"status": "disabled"}
 
 
 @app.get("/metrics")

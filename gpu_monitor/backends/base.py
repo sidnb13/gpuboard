@@ -5,7 +5,7 @@ from enum import Enum
 
 class BackendType(Enum):
     LAMBDA_LABS = "lambda_labs"
-    # Add other backends here as they're implemented
+    DRY_RUN = "dry_run"
 
 
 class Backend(ABC):

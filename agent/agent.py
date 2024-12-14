@@ -24,7 +24,7 @@ class Agent:
         name: Optional[str] = None,
         redis_client: redis.Redis = None,
         stream_interval: int = 10,
-        registration_interval: int = 30,
+        registration_interval: int = 10,
     ):
         self.monitor_url = monitor_url
         self.instance_id = instance_id
@@ -127,6 +127,7 @@ class InstanceMonitor:
         self.pubsub = self.redis.pubsub()
         self.stream_interval = stream_interval
         self.nvml_active = False
+        self.ray_active = False
 
     async def initialize(self):
         """Initialize NVML if available."""
@@ -137,6 +138,18 @@ class InstanceMonitor:
         except Exception as e:
             logger.warning(f"NVML initialization failed: {e}")
             self.nvml_active = False
+
+        try:
+            import ray
+
+            ray.init(address="auto")
+
+            if ray.is_initialized():
+                self.ray_active = True
+                logger.info("Ray monitoring initialized successfully")
+        except Exception as e:
+            logger.warning(f"Ray monitoring initialization failed: {e}")
+            self.ray_active = False
 
     async def get_gpu_stats(self, nvml_active=False):
         if not nvml_active:
@@ -247,6 +260,119 @@ class InstanceMonitor:
 
         return ssh_stats
 
+    async def get_ray_stats(self):
+        """Collect comprehensive Ray cluster statistics."""
+        if not self.ray_active:
+            return
+
+        try:
+            import ray
+            from ray.util.state import (
+                list_actors,
+                list_jobs,
+                list_placement_groups,
+                list_tasks,
+                summarize_actors,
+                summarize_tasks,
+            )
+
+            # Helper function to make objects JSON serializable
+            def serialize_ray_object(obj):
+                if hasattr(obj, "hex"):  # For JobID, NodeID, etc.
+                    return obj.hex()
+                elif isinstance(obj, (ray.ObjectRef, ray.PlacementGroupID)):
+                    return str(obj)
+                return obj
+
+            ray_stats = {
+                "timestamp": datetime.now().isoformat(),
+                "cluster": {
+                    "total_nodes": len(ray.nodes()),
+                    "available_resources": ray.available_resources(),
+                    "total_resources": ray.cluster_resources(),
+                },
+                "nodes": [],
+                "jobs": [],
+                "actors": {
+                    "summary": summarize_actors(),
+                    "details": list_actors(filters=[("state", "=", "ALIVE")]),
+                },
+                "tasks": {
+                    "summary": summarize_tasks(),
+                    "running": list_tasks(filters=[("state", "=", "RUNNING")]),
+                },
+                "placement_groups": list_placement_groups(),
+            }
+
+            # Get detailed node information
+            for node in ray.nodes():
+                node_stats = {
+                    "node_id": node["NodeID"],
+                    "alive": node["Alive"],
+                    "resources": node["Resources"],
+                    "hostname": node.get("NodeManagerAddress"),
+                    "ip": node.get("NodeManagerHostname"),
+                    "cpu_nums": node["Resources"].get("CPU", 0),
+                    "gpu_nums": node["Resources"].get("GPU", 0),
+                    "object_store_memory": node.get(
+                        "ObjectStoreAvailableMemory", 0
+                    ),  # Use .get() with default
+                    "metrics": node.get("MetricsExportPort"),
+                }
+                ray_stats["nodes"].append(node_stats)
+
+            # Modify the jobs loop to serialize JobID
+            for job in list_jobs():
+                job_stats = {
+                    "job_id": serialize_ray_object(job["job_id"]),
+                    "status": job["status"],
+                    "start_time": job["start_time"],
+                    "end_time": job.get("end_time"),
+                    "config": job.get("config"),
+                }
+                ray_stats["jobs"].append(job_stats)
+
+            # Get memory stats
+            memory_stats = ray.available_resources()
+            ray_stats["memory"] = {
+                "available_memory": memory_stats.get("memory", 0),
+                "available_object_store_memory": memory_stats.get(
+                    "object_store_memory", 0
+                ),
+            }
+
+            # Modify runtime context serialization
+            try:
+                context = ray.get_runtime_context()
+                ray_stats["runtime"] = {
+                    "job_id": serialize_ray_object(context.job_id),
+                    "node_id": serialize_ray_object(context.node_id),
+                }
+            except Exception:
+                pass
+
+            # Convert the entire ray_stats dictionary to be JSON serializable
+            def make_json_serializable(obj):
+                if isinstance(obj, dict):
+                    return {k: make_json_serializable(v) for k, v in obj.items()}
+                elif isinstance(obj, list):
+                    return [make_json_serializable(v) for v in obj]
+                else:
+                    return serialize_ray_object(obj)
+
+            ray_stats = make_json_serializable(ray_stats)
+            stats_json = json.dumps(ray_stats)
+
+            logger.debug(f"Ray stats: {stats_json}")
+            await self.redis.publish(f"stats/{self.instance_id}/ray", stats_json)
+
+        except Exception as e:
+            import traceback
+
+            logger.error(
+                f"Error getting Ray stats: {e}\nTraceback:\n{traceback.format_exc()}"
+            )
+
     async def run(self):
         """Main monitoring loop."""
         await self.initialize()
@@ -257,6 +383,8 @@ class InstanceMonitor:
                     await self.get_gpu_stats(self.nvml_active)
                     await self.get_cpu_stats()
                     await self.get_ssh_stats()
+                    if self.ray_active:
+                        await self.get_ray_stats()
                     await asyncio.sleep(self.stream_interval)
                 except Exception as e:
                     logger.error(f"Error in monitoring loop: {e}")

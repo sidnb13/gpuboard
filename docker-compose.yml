@@ -14,10 +14,8 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     platform: linux/amd64
     depends_on:
-      - redis:
-          condition: service_started
-      - db:
-          condition: service_healthy
+      - redis
+      - db
     env_file:
       - .env.monitor
 
@@ -59,8 +57,7 @@ services:
               count: all
               capabilities: [gpu]
     depends_on:
-      - redis:
-          condition: service_healthy
+      - redis
     env_file:
       - .env.agent
 
@@ -78,10 +75,8 @@ services:
       - ~/.ssh/github:/root/.ssh/github:ro
     platform: linux/arm64
     depends_on:
-      - redis:
-          condition: service_started
-      - db:
-          condition: service_healthy
+      - redis
+      - db
 
   redis:
     image: redis:7-alpine

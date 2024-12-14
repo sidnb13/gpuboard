@@ -6,12 +6,12 @@ from enum import Enum
 from typing import Dict, List, Optional, Set
 
 from pydantic import BaseModel
-from slack_sdk.errors import SlackApiError
-from slack_sdk.web.async_client import AsyncWebClient
 
+from gpu_monitor.notifier.base import NotifierResponse
 from logger import get_logger
 
 from .backends import Backend, BackendFactory, BackendType
+from .notifier import DiscordNotifier, SlackNotifier
 
 logger = get_logger(__name__)
 
@@ -48,7 +48,11 @@ class ClusterMonitor:
         dry_run: bool = False,
         agent_url: str = "http://localhost:8000",
         slack_token: Optional[str] = None,
+        slack_app_token: Optional[str] = None,
         slack_channel: Optional[str] = None,
+        discord_token: Optional[str] = None,
+        discord_channel_id: Optional[int] = None,
+        notifier_type: str = "discord",
     ):
         self.idle_shutdown_minutes = idle_shutdown_minutes
         self.warning_minutes = warning_minutes
@@ -58,9 +62,25 @@ class ClusterMonitor:
         self.logger = logging.getLogger(__name__)
         self.known_agents: Set[str] = set()
 
-        # Slack configuration
-        self.slack = AsyncWebClient(token=slack_token) if slack_token else None
-        self.slack_channel = slack_channel
+        self.notifiers = []
+        if notifier_type == "slack":
+            assert (
+                slack_token and slack_channel
+            ), "Slack notifier requires both token and channel"
+            notifier = SlackNotifier(slack_token, slack_app_token, slack_channel)
+            notifier.set_shutdown_callback(self.handle_shutdown_response)
+            self.notifiers.append(notifier)
+        if notifier_type == "discord":
+            assert (
+                discord_token and discord_channel_id
+            ), "Discord notifier requires both token and channel ID"
+            notifier = DiscordNotifier(discord_token, discord_channel_id)
+            notifier.set_shutdown_callback(self.handle_shutdown_response)
+            self.notifiers.append(notifier)
+
+        # Start notifiers
+        for notifier in self.notifiers:
+            asyncio.create_task(notifier.start())
 
         # Track stats per instance
         self.instances: Dict[str, InstanceConfig] = {}
@@ -68,6 +88,27 @@ class ClusterMonitor:
         self.ws_base_url = agent_url.replace("http://", "ws://").replace(
             "https://", "wss://"
         )
+
+    async def handle_shutdown_response(
+        self, instance_id: str, response: NotifierResponse, user: str
+    ):
+        """Handle response from notification buttons"""
+        if instance_id not in self.instances:
+            logger.warning(f"Received response for unknown instance: {instance_id}")
+            return
+
+        if response == NotifierResponse.ACCEPT:
+            # Immediate shutdown
+            logger.info(f"Shutdown accepted for {instance_id} by {user}")
+            await self.shutdown_instance(instance_id)
+
+        elif response == NotifierResponse.DENY:
+            # Cancel shutdown and reset timer
+            logger.info(f"Shutdown denied for {instance_id} by {user}")
+            if instance_id in self.shutdown_queue:
+                del self.shutdown_queue[instance_id]
+            # Reset activity timer
+            self.instances[instance_id].last_activity_time = datetime.now()
 
     async def get_instance_status(self, instance_id: str) -> InstanceStatus:
         instance = self.instances.get(instance_id)
@@ -133,65 +174,11 @@ class ClusterMonitor:
             raise
 
     async def notify_users(
-        self, instance_id: str, users: List[str], minutes_remaining: int, ts: str = None
-    ) -> Optional[str]:
-        """
-        Notify users of impending shutdown via Slack.
-        Returns the timestamp of the message for potential updates.
-        """
-        if not self.slack or not self.slack_channel:
-            self.logger.warning("Slack not configured, skipping notification")
-            return None
-
-        instance = self.instances[instance_id]
-        message = (
-            f"⚠️ *Instance Shutdown Warning* ⚠️\n"
-            f"Instance {instance.name} ({instance_id}) will shut down in {minutes_remaining} minutes due to inactivity.\n"
-            f"Active users: {', '.join(users)}\n"
-            f"Please save your work and log out if you're done."
-        )
-
-        try:
-            if self.dry_run:
-                self.logger.info(f"DRY RUN: Would send Slack message: {message}")
-                return None
-
-            if ts:
-                # Update existing message
-                response = await self.slack.chat_update(
-                    channel=self.slack_channel, ts=ts, text=message, unfurl_links=False
-                )
-            else:
-                # Send new message
-                response = await self.slack.chat_postMessage(
-                    channel=self.slack_channel, text=message, unfurl_links=False
-                )
-            return response["ts"]  # Return message timestamp for future updates
-        except SlackApiError as e:
-            self.logger.error(f"Failed to send Slack notification: {e}")
-            return None
-
-    async def update_shutdown_status(self, instance_id: str, status: str, ts: str):
-        """Update Slack message with shutdown status."""
-        if not self.slack or not self.slack_channel or not ts:
-            return
-
-        instance = self.instances.get(instance_id)
-        if not instance:
-            return
-
-        message = (
-            f"🔄 *Instance Shutdown Status* 🔄\n"
-            f"Instance {instance.name} ({instance_id}): {status}"
-        )
-
-        try:
-            if not self.dry_run:
-                await self.slack.chat_update(
-                    channel=self.slack_channel, ts=ts, text=message, unfurl_links=False
-                )
-        except SlackApiError as e:
-            self.logger.error(f"Failed to update Slack message: {e}")
+        self, instance_id: str, users: List[str], minutes_remaining: int
+    ) -> None:
+        """Send shutdown warnings through all configured notifiers."""
+        for notifier in self.notifiers:
+            await notifier.send_shutdown_warning(instance_id, users, minutes_remaining)
 
     async def shutdown_instance(self, instance_id: str):
         """Shutdown specific instance using its backend."""
@@ -272,6 +259,66 @@ class ClusterMonitor:
             self.logger.error(f"Error checking user activity: {e}")
             return False
 
+    async def check_ray_activity(self, stats: Dict) -> bool:
+        """Check if there's any active Ray cluster activity."""
+        try:
+            ray_stats = stats.get("ray_stats", {})
+            if not ray_stats:
+                return False
+
+            # Check for active jobs
+            jobs = ray_stats.get("jobs", [])
+            active_jobs = [job for job in jobs if job.get("status") == "RUNNING"]
+            if active_jobs:
+                self.logger.info(f"Active Ray jobs detected: {len(active_jobs)}")
+                return True
+
+            # Check for active actors
+            actors = ray_stats.get("actors", {}).get("details", [])
+            if actors:
+                self.logger.info(f"Active Ray actors detected: {len(actors)}")
+                return True
+
+            # Check for running tasks
+            tasks = ray_stats.get("tasks", {}).get("running", [])
+            if tasks:
+                self.logger.info(f"Active Ray tasks detected: {len(tasks)}")
+                return True
+
+            return False
+        except Exception as e:
+            self.logger.error(f"Error checking Ray activity: {e}")
+            return False
+
+    async def check_instance_activity(self, stats: Dict) -> bool:
+        """
+        Comprehensive check for instance activity across GPU, CPU, and Ray.
+        Returns True if there's significant activity.
+        """
+        try:
+            # Check GPU processes first (highest priority)
+            gpu_active = await self.check_active_processes(stats)
+            if gpu_active:
+                self.logger.info("Active GPU processes detected")
+                return True
+
+            # Check Ray cluster activity
+            ray_active = await self.check_ray_activity(stats)
+            if ray_active:
+                self.logger.info("Active Ray cluster detected")
+                return True
+
+            # Check CPU activity (might indicate Jupyter notebook usage)
+            cpu_active = await self.check_user_activity(stats)
+            if cpu_active:
+                self.logger.info("Active CPU usage detected")
+                return True
+
+            return False
+        except Exception as e:
+            self.logger.error(f"Error checking instance activity: {e}")
+            return False
+
     async def process_stats(self, instance_id: str, stat_type: str, data: dict):
         """Process incoming stats from an agent."""
         if instance_id not in self.instances:
@@ -283,65 +330,98 @@ class ClusterMonitor:
 
     async def monitor_loop(self):
         """Main monitoring loop for all instances."""
-        shutdown_queue = {}  # Track instances pending shutdown: {instance_id: slack_ts}
+        self.shutdown_queue = {}  # Track instances pending shutdown: {instance_id: (start_time, message_ids)}
 
         while True:
             try:
                 # Process pending shutdowns first
-                for instance_id, (start_time, slack_ts) in list(shutdown_queue.items()):
+                for instance_id, (start_time, message_ids) in list(
+                    self.shutdown_queue.items()
+                ):
                     if instance_id not in self.instances:
                         continue
 
                     elapsed_time = (datetime.now() - start_time).total_seconds() / 60
                     if elapsed_time >= self.warning_minutes:
                         try:
-                            await self.update_shutdown_status(
-                                instance_id, "Initiating shutdown...", slack_ts
+                            logger.info(
+                                f"Warning period elapsed for {instance_id}, initiating shutdown"
                             )
+                            # Update messages across all notifiers
+                            for notifier in self.notifiers:
+                                if message_ids.get(notifier.__class__.__name__):
+                                    await notifier.update_message(
+                                        message_ids[notifier.__class__.__name__],
+                                        f"⚠️ **Instance Shutdown** ⚠️\nInitiating shutdown for instance {instance_id}...",
+                                    )
+
+                            # Perform shutdown
                             await self.shutdown_instance(instance_id)
-                            await self.update_shutdown_status(
-                                instance_id, "Shutdown completed", slack_ts
-                            )
+
+                            # Final message update
+                            for notifier in self.notifiers:
+                                if message_ids.get(notifier.__class__.__name__):
+                                    await notifier.update_message(
+                                        message_ids[notifier.__class__.__name__],
+                                        f"✅ **Shutdown Complete** ✅\nInstance {instance_id} has been shut down.",
+                                    )
                         except Exception as e:
-                            await self.update_shutdown_status(
-                                instance_id, f"Shutdown failed: {str(e)}", slack_ts
+                            logger.error(
+                                f"Failed to shutdown instance {instance_id}: {e}"
                             )
+                            # Update messages with error
+                            for notifier in self.notifiers:
+                                if message_ids.get(notifier.__class__.__name__):
+                                    await notifier.update_message(
+                                        message_ids[notifier.__class__.__name__],
+                                        f"❌ **Shutdown Failed** ❌\nFailed to shutdown instance {instance_id}: {str(e)}",
+                                    )
                         finally:
-                            del shutdown_queue[instance_id]
+                            del self.shutdown_queue[instance_id]
 
                 # Check for new instances that need shutdown
-                for instance_id, instance in self.instances.items():
-                    if instance_id in shutdown_queue:
+                for instance_id, instance in list(self.instances.items()):
+                    if instance_id in self.shutdown_queue:
                         continue  # Skip instances already pending shutdown
 
                     stats = self.instance_stats[instance_id]
-                    active_processes = await self.check_active_processes(stats)
                     ssh_users = await self.get_ssh_sessions(stats)
-                    has_activity = active_processes
 
-                    logger.debug(f"Instance {instance_id} has activity: {has_activity}")
+                    # Comprehensive activity check
+                    has_activity = await self.check_instance_activity(stats)
 
-                    # Check for user activity
-                    if not has_activity and ssh_users:
-                        has_activity = await self.check_user_activity(stats)
-                        if has_activity:
-                            instance.last_activity_time = datetime.now()
+                    if has_activity:
+                        instance.last_activity_time = datetime.now()
+                        continue
 
-                    if not has_activity:
-                        idle_time = datetime.now() - instance.last_activity_time
-                        idle_minutes = idle_time.total_seconds() / 60
+                    # If no activity detected, check idle time
+                    idle_time = datetime.now() - instance.last_activity_time
+                    idle_minutes = idle_time.total_seconds() / 60
 
-                        if idle_minutes >= self.idle_shutdown_minutes:
-                            # Initiate shutdown sequence
-                            slack_ts = await self.notify_users(
+                    if idle_minutes >= self.idle_shutdown_minutes:
+                        # Initiate shutdown sequence
+                        message_ids = {}
+
+                        # Send warnings through all configured notifiers
+                        for notifier in self.notifiers:
+                            message_id = await notifier.send_shutdown_warning(
                                 instance_id, ssh_users, self.warning_minutes
                             )
-                            shutdown_queue[instance_id] = (datetime.now(), slack_ts)
-                            logger.debug(
+                            if message_id:
+                                message_ids[notifier.__class__.__name__] = message_id
+
+                        if (
+                            message_ids
+                        ):  # Only queue if at least one notification was sent
+                            self.shutdown_queue[instance_id] = (
+                                datetime.now(),
+                                message_ids,
+                            )
+                            logger.info(
                                 f"Instance {instance_id} queued for shutdown in {self.warning_minutes} minutes"
                             )
 
             except Exception as e:
-                self.logger.error(f"Error in monitor loop: {e}")
+                logger.error(f"Error in monitor loop: {e}", exc_info=True)
 
             await asyncio.sleep(self.check_interval)
